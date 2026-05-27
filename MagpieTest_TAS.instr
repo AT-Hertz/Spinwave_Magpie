@@ -1,0 +1,371 @@
+/*******************************************************************************
+* Instrument: <instrument name>
+*
+* %I
+* Written by: Dorothy Wang, Kim Lefmann
+* Date: 27 Sept 2023
+* Origin: NBI, KU
+* %INSTRUMENT_SITE: Generic
+*
+* Simple thermal triple axis spectrometer for test of magnon_v1
+*
+* %D
+* <instrument description>
+*
+* Example: <parameters=values>
+*
+* %P
+* E:       [meV] Energy transfer
+* Ef:      [meV] Final energy
+* Dlambda: [AA] width of wavelength band
+* h:       [rlu] q-value in hexagonal plane
+* l:       [rlu] q-value out of hexagonal plane
+* dA3:     [deg] A3 offset
+* ...
+*
+* %L
+* <reference/HTML link>
+*
+* %E
+*******************************************************************************/
+DEFINE INSTRUMENT template_body_simple(E=1.06,Ef=14.7,Dlambda=0.1, h=1, l=1,B=0,dA3=-90, Temp=2, width = 0.005, E_steps_low = 50, E_steps_high = 50,mode = 2,verbose=0, FM=0)
+
+DECLARE
+%{
+  double Gqx,Gqy,Gqz;
+//double Ef=24.8
+double Ei;
+//meV
+double thetaM;
+double twothetaS;
+double thetaA;
+double A3;
+double QM;
+double alpha;
+double lambda_i;
+double SMALL__NUMBER;
+double a;
+double c;
+double jAFM;
+double jFM;
+double jextra;
+double S;
+double D;
+%}
+
+INITIALIZE
+%{
+// Set monochromator/analyzer Q-value for PG
+QM = 1.8734;
+SMALL__NUMBER = 1e-6;
+
+// MnF2 parameters
+// Lattice vectors in AA
+a = 4.873;
+c =  3.130;
+
+jAFM = 2*0.152;
+jFM = -2*0.028;
+jextra = 2*0.004;
+S = 2.5;
+D = -0.023;
+
+//MnF2 reciprocal lattice vectors, in 1/AA
+double astar = 2*PI/a;
+double cstar = 2*PI/c;
+
+//calculate Ei
+Ei=Ef+E;
+
+//calculate ki, kf, lambda_i, q
+double ki = V2K*SE2V*sqrt(Ei);
+double kf = V2K*SE2V*sqrt(Ef);
+lambda_i=2*PI/ki;
+double q = sqrt(h*h*astar*astar+l*l*cstar*cstar);
+
+//calculate 2thetaM and 2thetaA
+thetaM = asin(QM/(2*ki))*RAD2DEG;
+thetaA = asin(QM/(2*kf))*RAD2DEG;
+
+//calculate scattering angle and sample rotation
+twothetaS = acos((q*q-ki*ki-kf*kf)/(-2*ki*kf))*RAD2DEG;
+alpha = acos((kf*kf-ki*ki-q*q)/(-2*ki*q));
+A3=(asin(l*cstar/(q+SMALL__NUMBER))-alpha)*RAD2DEG;
+
+//Printout calculations
+printf("=== INITIALIZE: h=%g l=%g Ei=%g Ef=%g ===\n", h, l, Ei, Ef);
+printf("a = %g c = %g astar = %g cstar = %g \n",a,c,astar,cstar);
+printf("ki = %g kf = %g q = %g lambda_i = %g\n",ki,kf,q,lambda_i);
+printf("thetaA = %g thetaM = %g\n",thetaA,thetaM);
+printf("twothetaS = %g \n",twothetaS);
+printf("A3 = %g \n",A3);
+printf("alpha = %g \n",alpha);
+
+%}
+
+TRACE
+
+COMPONENT origin = Progress_bar()
+AT (0, 0, 0) RELATIVE ABSOLUTE
+
+COMPONENT source = Source_Maxwell_3(
+    xwidth=0.01,
+    yheight=0.01,
+    Lmin=lambda_i-Dlambda/2, 
+    Lmax=lambda_i+Dlambda/2, 
+    dist=7.5, 
+    focus_yh=width, 
+    focus_xw=width, 
+    T1=300, 
+    T2=300, 
+    T3=300, 
+    I1=1E15,
+    I2=1E15,
+    I3=1E15)
+AT (0, 0, 0) RELATIVE PREVIOUS
+
+/*COMPONENT l_monitor_before_mono = L_monitor(
+    nL=200, 
+    filename="lbeforemono", 
+    Lmin=0, 
+    Lmax=4,
+    xwidth=0.16, 
+    yheight=0.25, 
+    restore_neutron=1)
+AT (0, 0, 7) RELATIVE PREVIOUS*/
+
+/*COMPONENT collimator_linear0 = Collimator_linear(
+    xwidth=0.1, 
+    yheight=0.2, 
+    length=0.2, 
+    divergence=40)
+AT (0, 0, 0.1) RELATIVE PREVIOUS */
+
+COMPONENT monochromator_flat = Monochromator_flat(
+     mosaicv=30,
+     mosaich=30,
+     zwidth = width,
+     yheight = width,
+     Q=QM)
+AT (0, 0, 7.5) RELATIVE source
+ROTATED (0, thetaM, 0) RELATIVE source
+
+COMPONENT arm1 = Arm()
+AT (0, 0, 0) RELATIVE PREVIOUS
+ROTATED (0, thetaM, 0) RELATIVE PREVIOUS
+
+COMPONENT collimator_linear1 = Collimator_linear(
+    xwidth=0.1, 
+    yheight=0.2, 
+    length=0.2, 
+    divergence=40)
+AT (0, 0, 0.7) RELATIVE arm1
+
+/*COMPONENT l_monitor_before_sample = L_monitor(
+    nL=300, 
+    filename="L_beforesampla", 
+    Lmin=lambda_i - Dlambda, 
+    Lmax=lambda_i + Dlambda,
+    restore_neutron=1)
+AT (0, 0, 0.9) RELATIVE arm1*/
+
+/*COMPONENT e_monitor_before_sample = E_monitor(
+    nE=100, 
+    filename="E_before_sample", 
+    Emin=Ei-2, 
+    Emax=Ei+2, 
+    restore_neutron=1)
+AT (0, 0, 0.01) RELATIVE PREVIOUS*/
+
+COMPONENT PSD_monitor_before_sample = PSD_monitor(
+    nx = 200,
+    ny = 200,
+    xwidth = 2*width+0.001,
+    yheight = 2*width+0.001,
+    filename="PSD_before_sample", 
+    restore_neutron=1)
+AT (0, 0, 0.95) RELATIVE arm1
+
+COMPONENT e_monitor_before_sample = E_monitor(
+    nE=100, 
+    filename="E_before_sample", 
+    Emin=Ei-2, 
+    Emax=Ei+2,
+    xwidth=width,
+    yheight=2*width,
+    restore_neutron=1)
+AT (0, 0, 0.99) RELATIVE arm1
+
+COMPONENT arm2 = Arm()
+AT (0, 0, 1) RELATIVE arm1
+ROTATED (0, 0, 0) RELATIVE arm1
+
+SPLIT 1
+
+/*COMPONENT SAMPLE = SpinWave_BCO(
+    radius = width/2,
+    yheight = 2*width,
+    sigma_abs = 0,
+    sigma_inc = 0,
+    T = Temp,
+    a1 = a,
+    a2 = a,
+    a3 = c,
+    j = jAFM,
+    jc = jFM,
+    ja=jextra,
+    jb=jextra,
+    S=S,
+    B=B,
+    D=D,
+    FM=FM,
+    mode_input = mode,
+    e_steps_low = E_steps_low,
+    e_steps_high = E_steps_high,
+    target_index=3,
+    focus_xw=0.005,
+    focus_yh=0.005,
+    verbose = verbose)
+AT (0, 0, 0) RELATIVE arm2
+ROTATED (0, -A3+dA3, 180) RELATIVE arm2*/
+
+/*COMPONENT SAMPLE = MagpieTest_v3(
+    radius=width/2,
+    yheight=2*width,
+    sigma_abs=0,
+    sigma_inc=0,
+    b=1,
+    M=1,
+    DW=1,
+    T= Temp,
+    target_x=0, 
+    target_y=0, 
+    target_z=0, 
+    target_index=3,
+    focus_r=0,
+    focus_xw=0.005,
+    focus_yh=0.005,
+    focus_aw=0,
+    focus_ah=0, 
+    e_steps_low=E_steps_low,
+    e_steps_high=E_steps_high)
+AT (0, 0, 0) RELATIVE arm2
+ROTATED (0, -A3+dA3, 180) RELATIVE arm2*/
+
+COMPONENT SAMPLE = SpinWave_Magpie_v4(
+    radius=width/2,
+    yheight=2*width,
+    sigma_abs=0,
+    sigma_inc=0,
+    M=1,
+    DW=1,
+    T= Temp,
+    target_x=0, 
+    target_y=0, 
+    target_z=0, 
+    target_index=3,
+    focus_r=0,
+    focus_xw=0.005,
+    focus_yh=0.005,
+    focus_aw=0,
+    focus_ah=0, 
+    e_steps_low=E_steps_low,
+    e_steps_high=E_steps_high)
+AT (0, 0, 0) RELATIVE arm2
+ROTATED (0, -A3+dA3, 180) RELATIVE arm2
+
+COMPONENT arm3 = Arm()
+AT (0, 0, 0) RELATIVE arm2
+ROTATED (0, -twothetaS, 0) RELATIVE arm2
+
+COMPONENT collimator_linear2 = Collimator_linear(
+    xwidth=0.1, 
+    yheight=0.2, 
+    length=0.2, 
+    divergence=40,
+    xwidth=width, 
+    yheight=width)
+AT (0, 0, 0.5) RELATIVE arm3
+
+COMPONENT psd_monitoraftersample = PSD_monitor(
+    nx=200, 
+    ny=200, 
+    filename="psdaftersample", 
+    restore_neutron=1)
+AT (0, 0, 1) RELATIVE arm3
+
+COMPONENT slit = Slit(
+    xwidth=0.005, 
+    yheight=0.005)
+AT (0, 0, 0.001) RELATIVE psd_monitoraftersample
+
+
+COMPONENT e_monitor_beforeana = E_monitor(
+    nE=250, 
+    filename="Ebeforeana", 
+    xwidth=width, 
+    yheight=width, 
+    Emin=0, 
+    Emax=25,
+    restore_neutron=1)
+AT (0, 0, 0.001) RELATIVE PREVIOUS
+
+/*COMPONENT psd_test = PSD_monitor(
+    nx=200, 
+    ny=200, 
+    filename="PSD_test", 
+    restore_neutron=1)
+AT (0, 0, 0.001) RELATIVE PREVIOUS*/
+
+COMPONENT analyzer = Monochromator_flat(
+    zwidth=width, 
+    yheight=width,
+    mosaicv=30,
+    mosaich=30,
+    Q=QM
+    )
+AT (0, 0, 0.1) RELATIVE PREVIOUS
+ROTATED (0, thetaA, 0) RELATIVE PREVIOUS
+
+/*COMPONENT psd_monitor_4pi = PSD_monitor_4PI(
+    filename="mon_4pi", 
+    restore_neutron=1)
+AT (0, 0, 0.1) RELATIVE PREVIOUS*/
+
+COMPONENT arm4 = Arm()
+AT (0, 0, 0) RELATIVE PREVIOUS
+ROTATED (0, thetaA, 0) RELATIVE PREVIOUS
+
+COMPONENT collimator_linear3 = Collimator_linear(
+    xwidth=0.1, 
+    yheight=0.2, 
+    length=0.2, 
+    divergence=40)
+AT (0, 0, 0.5) RELATIVE PREVIOUS
+
+
+
+COMPONENT Emon_after_analyzer = E_monitor(
+    nE=250, 
+    filename="Eafteranalyzer", 
+    xwidth=width, 
+    yheight=width, 
+    Emin=0, 
+    Emax=75,
+    restore_neutron=1)
+AT (0, 0, 1) RELATIVE arm4
+
+
+COMPONENT psd_detector = PSD_monitor(
+    nx=128, 
+    ny=128, 
+    filename="PSDdetector", 
+    xwidth=0.025, 
+    yheight=0.1)
+AT (0, 0, 0.001) RELATIVE PREVIOUS
+
+FINALLY
+%{
+%}
+
+END

@@ -1,0 +1,689 @@
+/*******************************************************************************
+*
+*  McStas, neutron ray-tracing package
+*  Copyright(C) 2000 Risoe National Laboratory.
+*
+* %I
+* Written by: Arthur T. Hertz (algoritme based on "phonon_simple" by Kim Lefmann)
+* Date: 12.06.26
+* Origin: KU
+*
+* A sample for AFM magnon scattering from bco lattice based on magpie
+*
+* %D
+* Single-cylinder shape.
+* Absorption included.
+*
+* Algorithm:
+* 0. Check if neutron intersects the sample cylinder, ABSORB if entering from inside
+* 1. Choose a random scattering point and time within the cylinder
+* 2. Choose a random final direction within the focusing solid angle
+* 3. Compute fixed Q = k_i - k_f and find all v_f satisfying energy conservation E_magnon(Q) = E_i - E_f
+* 4. Choose one root v_f uniformly at random from the list of valid solutions
+* 5. Compute the neutron weight factor
+*
+ %P
+* INPUT PARAMETERS:
+* radius: [m]         Outer radius of sample in (x,z) plane
+* yheight: [m]        Height of sample in y direction
+* sigma_abs: [barns]  Absorption cross section at 2200 m/s per atom
+* sigma_inc: [barns]  Incoherent scattering cross section per atom
+* M: [a.u.]           Atomic mass
+* DW: [1]             Debye-Waller factor
+* T: [K]              Temperature
+* focus_r: [m]        Radius of sphere containing target.
+* focus_xw: [m]       horiz. dimension of a rectangular area
+* focus_yh: [m]       vert.  dimension of a rectangular area
+* focus_aw: [deg]     horiz. angular dimension of a rectangular area
+* focus_ah: [deg]     vert.  angular dimension of a rectangular area
+* target_x: [m]       position of target to focus at . Transverse coordinate
+* target_y: [m]       position of target to focus at. Vertical coordinate
+* target_z: [m]       position of target to focus at. Straight ahead.
+* target_index: [1]   relative index of component to focus at, e.g. next is +1 
+* e_steps_low: [1]    Amount of possible intersections beneath the elastic line
+* e_steps_high: [1]   Amount of possible intersections above the elastic line
+*
+* CALCULATED PARAMETERS:
+* V_my_s: [m^-1]      Attenuation factor due to incoherent scattering
+* V_my_a_v: [m^-1]    Attenuation factor due to absorbtion
+*
+* %E
+******************************************************************************/
+
+DEFINE COMPONENT SpinWave_Magpie_v4
+
+SETTING PARAMETERS (string model_file = "/home/arthur/magpie/tools/magdyn/test/MnF_2_test_v2.magpie",radius,yheight,sigma_abs,sigma_inc,M,DW,T,
+              target_x=0, target_y=0, target_z=0, int target_index,
+              focus_r=0,focus_xw=0,focus_yh=0,focus_aw=0,focus_ah=0, int e_steps_low, int e_steps_high)
+
+/* Neutron parameters: (x,y,z,vx,vy,vz,t,sx,sy,sz,p) */
+SHARE
+%{
+#include "magpie_c.h"
+void *mag = 0;   // magpie handle
+
+
+
+#ifndef PHONON_SIMPLE
+#define PHONON_SIMPLE $Revision$
+#define T2E (1/11.605)   /* Kelvin to meV */
+//klader phonon men er en magnon
+	struct phonon_params {
+    int e_steps_high_;
+    int e_steps_low_;
+    double a1;
+    double a2;
+    double a3;
+    int branch_idx;
+    double coherence_flag;
+    double h_hkl;
+    double l_hkl;
+    t_magpie global_mag;
+    t_magpie_real *Es;
+    t_magpie_real *ws;
+    unsigned int max_branches;
+    double T_;
+    double qx_fixed;  // fixed scattering vector components
+    double qy_fixed;
+    double qz_fixed;
+    int q_fixed;      // flag: 0=calculate from vf, 1=use fixed Q
+	};
+  struct neutron_params {
+		// Statically allocate vectors that are always 3 
+    double vf; // Final velocity size
+    double vi; // Initial velocity size
+    double vv_x; // vv is the unit vector of the final velocity vector
+    double vv_y;
+    double vv_z;
+    double vi_x; // vi is the initial velocity vector
+    double vi_y;
+    double vi_z;
+   
+	};
+
+#pragma acc routine 
+double nbose(double omega, double T)  /* Other name ?? */
+  {
+    double nb;
+
+    nb= (omega>0) ? 1+1/(exp(omega/(T*T2E))-1) : 1/(exp(-omega/(T*T2E))-1);
+    return nb;
+  }
+#undef T2E
+/* Routine types from Numerical Recipies book */
+#define UNUSED (-1.11e30)
+#define MAXRIDD 60
+
+void fatalerror_cpu(char *s)
+  {
+    fprintf(stderr,"%s \n",s);
+    exit(1);
+  }
+ 
+#pragma acc routine 
+void fatalerror(char *s)
+  {
+  #ifndef OPENACC	
+    fatalerror_cpu(s);
+  #endif
+  }
+
+  #pragma acc routine
+  double omega_q(struct neutron_params *neutron, struct phonon_params *phonon)
+    { 
+      
+
+      /* dispersion in units of meV  */
+      double vi, vf, vv_x, vv_y, vv_z, vi_x, vi_y, vi_z;
+      double qx, qy, qz;
+      double a1, a2, a3;
+      double h_q, l_q;
+      double coherence_flag;
+      t_magpie global_mag;
+      int branch_idx; //skal gøre så man kan vælge branch...måske
+      t_magpie_real *Es;
+      t_magpie_real *ws;
+      unsigned int max_branches;
+      double T;
+      t_magpie_real omega_magnon;
+      t_magpie_real coherence_factor;
+      t_magpie_real omega_neutron;
+      t_magpie_real best_diff;
+      t_magpie_real diff;
+
+      vf=neutron->vf;
+      vi=neutron->vi;
+      vv_x=neutron->vv_x;
+      vv_y=neutron->vv_y;
+      vv_z=neutron->vv_z;
+      vi_x=neutron->vi_x;
+      vi_y=neutron->vi_y;
+      vi_z=neutron->vi_z;
+      branch_idx=phonon->branch_idx;
+      a1=phonon->a1;
+      a2=phonon->a2;
+      a3=phonon->a3;
+      coherence_flag=phonon->coherence_flag;
+      global_mag=phonon->global_mag;
+      Es =phonon->Es;
+      ws =phonon->ws;
+      max_branches=phonon->max_branches;
+      T=phonon->T_;
+
+
+      if(phonon->q_fixed)
+      {
+          qx = phonon->qx_fixed;
+          qy = phonon->qy_fixed;
+          qz = phonon->qz_fixed;
+      }
+      else
+      {
+          qx = V2K*(vi_x - vf*vv_x);
+          qy = V2K*(vi_y - vf*vv_y);
+          qz = V2K*(vi_z - vf*vv_z);
+      }
+
+      
+
+      a1=4.873;
+      a2=4.873;
+      a3=3.130;
+      // Find branch closest to neutron energy transfer
+
+      //correct for orthogonal lattices
+      t_magpie_real h_rlu = qx * a1 / (2.0 * M_PI);
+      t_magpie_real k_rlu = qy * a2 / (2.0 * M_PI);
+      t_magpie_real l_rlu = qz * a3 / (2.0 * M_PI);
+
+
+      //fprintf(stderr, "Calling magpie with H=%f K=%f L=%f\n", h_rlu, k_rlu, l_rlu);
+      unsigned int num_branches = magpie_calc_energies(global_mag, h_rlu, k_rlu, l_rlu, Es, ws);
+      //fprintf(stderr, "Got Es[0]=%f Es[6]=%f Es[7]=%f\n", Es[0], Es[6], Es[7]);
+     
+
+      omega_neutron = fabs(VS2E * (vi*vi - vf*vf));
+      //fprintf(stderr, "vf=%f omega_n=%f Q=(%f,%f,%f) Es[0]=%f Es[1]=%f Es[2]=%f\n", vf, omega_neutron, h_rlu, k_rlu, l_rlu, Es[0], Es[1], Es[2]);
+      //fprintf(stderr, "vv=(%f,%f,%f) vi=(%f,%f,%f)\n", vv_x, vv_y, vv_z, vi_x, vi_y, vi_z);
+ 
+      if(coherence_flag == 0.0)
+      {
+        // Only look for the physical magnon branch (Es[0])
+        // Return large positive value if omega_neutron is too small
+        // to prevent zridd from finding spurious low-energy roots
+        if(omega_neutron < 0.1)  // below minimum physical magnon energy
+        {
+            return 1.0;  // positive, no root here
+        }
+        omega_magnon = Es[0];  // physical magnon branch
+        return omega_magnon - omega_neutron;
+      }
+      else
+      {
+          // For coherence factor: find which branch matches the converged vf
+          branch_idx = 0;
+          best_diff = fabs(Es[0] - omega_neutron);
+          for(int i = 1; i < (int)num_branches; i++)
+          {
+              if(Es[i] <= 0) continue;
+              diff = fabs(Es[i] - omega_neutron);
+              if(diff < best_diff)
+              {
+                  best_diff = diff;
+                  branch_idx = i;
+              }
+          }
+          omega_magnon = Es[branch_idx];
+          coherence_factor = ws[branch_idx]; //might need a 187 fudge factor
+      
+          if(coherence_factor < 0.0)
+          {
+              fprintf(stderr, "Negative coherence factor\n");
+              return 0.0;
+          }
+          return coherence_factor;
+      }
+    }
+
+     
+
+
+double zridd(double (*func)(struct neutron_params*, struct phonon_params*), 
+              double x1, double x2, struct neutron_params *neutron, 
+              struct phonon_params *phonon, double xacc)
+    {
+      int j;
+      double ans, fh, fl, fm, fnew, s, xh, xl, xm, xnew;
+
+      neutron->vf=x1;
+      fl=func(neutron, phonon);
+      neutron->vf=x2;
+      fh=func(neutron, phonon);
+      if (fl*fh >= 0)
+      {
+        if (fl==0) return x1;
+        if (fh==0) return x2;
+        return UNUSED;
+      }
+      else
+      {
+        xl=x1;
+        xh=x2;
+        ans=UNUSED;
+        for (j=1; j<MAXRIDD; j++)
+        {
+          xm=0.5*(xl+xh);
+          neutron->vf=xm;
+          fm=func(neutron,phonon);
+          s=sqrt(fm*fm-fl*fh);
+          if (s == 0.0)
+            return ans;
+          xnew=xm+(xm-xl)*((fl >= fh ? 1.0 : -1.0)*fm/s);
+          if (fabs(xnew-ans) <= xacc)
+            return ans;
+          ans=xnew;
+          neutron->vf=ans;
+          fnew=func(neutron,phonon);
+          if (fnew == 0.0) return ans;
+          if (fabs(fm)*SIGN(fnew) != fm)
+          {
+            xl=xm;
+            fl=fm;
+            xh=ans;
+            fh=fnew;
+          }
+          else
+            if (fabs(fl)*SIGN(fnew) != fl)
+            {
+              xh=ans;
+              fh=fnew;
+            }
+            else
+              if(fabs(fh)*SIGN(fnew) != fh)
+              {
+                xl=ans;
+                fl=fnew;
+              }
+              else
+                fatalerror("never get here in zridd");
+          if (fabs(xh-xl) <= xacc)
+            return ans;
+        }
+        fatalerror("zridd exceeded maximum iterations");
+      }
+      return 0.0;  /* Never get here */
+    }
+
+#pragma acc routine 
+double zridd_gpu(double x1, double x2, struct neutron_params *neutron, struct phonon_params* phonon, double xacc)
+    {
+      int j;
+      double ans, fh, fl, fm, fnew, s, xh, xl, xm, xnew;
+
+      neutron->vf=x1;
+      fl=omega_q(neutron, phonon);
+      neutron->vf=x2;
+      fh=omega_q(neutron, phonon);
+      if (fl*fh >= 0)
+      {
+        if (fl==0) return x1;
+        if (fh==0) return x2;
+        return UNUSED;
+      }
+      else
+      {
+        xl=x1;
+        xh=x2;
+        ans=UNUSED;
+        for (j=1; j<MAXRIDD; j++)
+        {
+          xm=0.5*(xl+xh);
+          neutron->vf=xm;
+          fm=omega_q(neutron, phonon);
+          s=sqrt(fm*fm-fl*fh);
+          if (s == 0.0)
+            return ans;
+          xnew=xm+(xm-xl)*((fl >= fh ? 1.0 : -1.0)*fm/s);
+          if (fabs(xnew-ans) <= xacc)
+            return ans;
+          ans=xnew;
+          neutron->vf=ans;
+          fnew=omega_q(neutron, phonon);
+          if (fnew == 0.0) return ans;
+          if (fabs(fm)*SIGN(fnew) != fm)
+          {
+            xl=xm;
+            fl=fm;
+            xh=ans;
+            fh=fnew;
+          }
+          else
+            if (fabs(fl)*SIGN(fnew) != fl)
+            {
+              xh=ans;
+              fh=fnew;
+            }
+            else
+              if(fabs(fh)*SIGN(fnew) != fh)
+              {
+                xl=ans;
+                fl=fnew;
+              }
+              else
+                fatalerror("never get here in zridd");
+          if (fabs(xh-xl) <= xacc)
+            return ans;
+        }
+        fatalerror("zridd exceeded maximum iterations");
+      }
+      return 0.0;  /* Never get here */
+    }
+
+ 
+#define ROOTACC 1e-8
+
+  void findroots(double brack_low, double brack_mid, double brack_high, 
+                double *list, int* index, double (*f)(struct neutron_params*, struct phonon_params*), 
+                struct neutron_params *neutron, struct phonon_params *phonon) {
+    double root;
+    // Energy gain and energy loss spaces are not equally big. We check uniformly
+    // So we use two different ranges
+    double range_low = brack_mid - brack_low;
+    double range_high = brack_high - brack_mid;
+    // First in energy loss for the neutron
+    for (int i=0; i<phonon->e_steps_low_; i++){
+      root = zridd(f, brack_low+range_low*i/ phonon->e_steps_low_,
+                   brack_low+range_low*(i+1)/ phonon->e_steps_low_,
+                   neutron, phonon, ROOTACC);
+      if (root != UNUSED) {
+	list[(*index)++]=root;
+      }
+    }
+
+    // Then in energy gain for the neutron
+    for (int i=0; i<phonon->e_steps_high_; i++){
+      root = zridd(f, brack_mid+range_high*i/ phonon->e_steps_high_,
+		           brack_mid+range_high*(i+1)/ phonon->e_steps_high_,
+		           neutron, phonon, ROOTACC);
+      if (root != UNUSED){
+	list[(*index)++]=root;
+      }
+    }
+  }
+  
+#pragma acc routine 
+  void findroots_gpu(double brack_low, double brack_mid, double brack_high, 
+                    double *list, int* index, struct neutron_params *neutron, struct phonon_params *phonon) {
+    double root;
+    // Energy gain and energy loss spaces are not equally big. We check uniformly
+    // So we use two different ranges
+    double range_low = brack_mid - brack_low;
+    double range_high = brack_high - brack_mid;
+    // First in energy loss for the neutron
+    for (int i=0; i<phonon->e_steps_low_; i++){
+      root = zridd_gpu(brack_low+range_low*i/ phonon->e_steps_low_,
+		       brack_low+range_low*(i+1)/ phonon->e_steps_low_,
+		       neutron, phonon, ROOTACC);
+      if (root != UNUSED) {
+	list[(*index)++]=root;
+      }
+    }
+
+    // Then in energy gain for the neutron
+    for (int i=0; i<phonon->e_steps_high_; i++){
+      root = zridd_gpu(brack_mid+range_high*i/ phonon->e_steps_high_,
+		               brack_mid+range_high*(i+1)/ phonon->e_steps_high_,
+		               neutron, phonon, ROOTACC);
+      if (root != UNUSED){
+	list[(*index)++]=root;
+      }
+    }
+  }
+
+#undef UNUSED
+#undef MAXRIDD
+#endif
+%}
+
+DECLARE
+%{
+  double V_my_s;
+  double V_my_a_v;
+  double DV;
+  struct phonon_params phonon;
+  double gamma_n;
+  double r_0;
+  double g;
+  double V_0;
+  double Fq;
+  
+%}
+INITIALIZE
+%{
+
+    // initialise magpie
+	mag = magpie_create();
+	if(!mag)
+	{
+		fprintf(stderr, "Cannot initialise magpie.\n");
+		exit(-1);
+	}
+
+	// load the magnetic model given in the "model_file" parameter
+	fprintf(stderr, "Loading model file \"%s\"...\n", model_file);
+	if(!magpie_load(mag, model_file))
+	{
+		fprintf(stderr, "Cannot load magpie model file \"%s\".\n", model_file);
+		exit(-1);
+	}
+
+  magpie_set_field(mag, 0, 0, 0, 0.0, 0, 0);
+
+  magpie_set_temperature(mag, T);
+
+  fprintf(stderr, "Setting Temp:%f\n",T);
+
+  g = 2.0023;  /*electron g-factor*/
+  gamma_n = -1.913;  /*neutron gamma-factor*/
+  r_0 = 2.8179;    /*electron charge radius in fm*/
+  V_my_s = (2 * 100 * sigma_inc);
+  V_my_a_v = (2 * 100 * sigma_abs * 2200);
+  DV = 0.001;   /* Velocity change used for numerical derivative */
+  V_0 = 4.873*4.873*3.130;    /*inverse unit cell volume of sublattice (oP)*/
+  Fq=1;
+  
+  // Set constant parameters for parms object
+  //phonon.a_ = a;
+  //phonon.c_ = c;
+  //phonon.ah = a/2.0;
+  phonon.e_steps_high_ = e_steps_high;
+  phonon.e_steps_low_ = e_steps_low;
+  phonon.global_mag = mag;
+  phonon.T_=T;
+
+  phonon.max_branches = magpie_branch_count(phonon.global_mag);
+  phonon.Es= (t_magpie_real*) malloc(phonon.max_branches * sizeof(t_magpie_real)); 
+  phonon.ws= (t_magpie_real*) malloc(phonon.max_branches * sizeof(t_magpie_real)); 
+
+  /* now compute target coords if a component index is supplied */
+  if (!target_index && !target_x && !target_y && !target_z) target_index=1;
+  if (target_index){
+    Coords ToTarget;
+    ToTarget = coords_sub(POS_A_COMP_INDEX(INDEX_CURRENT_COMP+target_index),POS_A_CURRENT_COMP);
+    ToTarget = rot_apply(ROT_A_CURRENT_COMP, ToTarget);
+    coords_get(ToTarget, &target_x, &target_y, &target_z);
+  }
+  if (!(target_x || target_y || target_z)) {
+    printf("Phonon_simple: %s: The target is not defined. Using direct beam (Z-axis).\n",
+      NAME_CURRENT_COMP);
+    target_z=1;
+  }
+
+
+ 
+%}
+TRACE
+%{
+  double* vf_list;
+  #ifdef OPENACC
+  vf_list = (double *)malloc( (e_steps_low + e_steps_high)* sizeof(double)); // List of allowed final velocities. Has length of scan_steps
+  #else
+  vf_list = (double *)calloc( e_steps_low + e_steps_high, sizeof(double)); // List of allowed final velocities. Has length of scan_steps
+  #endif
+  if (!vf_list) {
+    printf("Memory allocation failed, fatal error!\n");
+    exit(-1);
+  }
+  #ifdef OPENACC
+  for (int ii=0; ii<e_steps_low+e_steps_high; ii++) {
+    vf_list[ii]=0;
+  }
+  #endif
+
+  struct neutron_params neutron;
+  double t0, t1;                /* Entry/exit time for cylinder */
+  double v_i, v_f;               /* Neutron velocities: initial, final */
+  double vx_i, vy_i, vz_i;  /* Neutron initial velocity vector */
+  double dt0, dt;             /* Flight times through sample */
+  double l_full;                /* Flight path length for non-scattered neutron */
+  double l_i, l_o;              /* Flight path lenght in/out for scattered neutron */
+  double my_a_i;                  /* Initial attenuation factor */
+  double my_a_f;                  /* Final attenuation factor */
+  double solid_angle;           /* Solid angle of target as seen from scattering point */
+  double aim_x=0, aim_y=0, aim_z=1;   /* Position of target relative to scattering point */
+  double kappa_x, kappa_y, kappa_z;   /* Scattering vector */
+  double kappa2;             /* Square of the scattering vector */
+  double kappa2_z_norm;
+  double bose_factor;        /* Calculated value of the Bose factor */
+  double omega;              /* energy transfer */
+  int nf, index;                   /* Number of allowed final velocities */
+  double J_factor;            /* Jacobian from delta fnc.s in cross section */
+  double f1, f2;            /* probed values of omega_q minus omega */
+  double p1,p2,p3,p4,p5,p6;    /* temporary multipliers */
+  double E_max;
+  //double p6, w_atten, w_MC, w_magnon, w_Jacobi, w_coherence;
+  
+  if(cylinder_intersect(&t0, &t1, x, y, z, vx, vy, vz, radius, yheight))
+  {
+    if(t0 < 0)
+      ABSORB; /* Neutron came from the sample or begins inside */
+
+    /* Neutron enters at t=t0. */
+    dt0 = t1-t0;                /* Time in sample */
+    v_i = sqrt(vx*vx + vy*vy + vz*vz);
+    l_full = v_i * dt0;   /* Length of path through sample if not scattered */
+    dt = rand01()*dt0;    /* Time of scattering (relative to t0) */
+    l_i = v_i*dt;                 /* Penetration in sample at scattering */
+    vx_i=vx;
+    vy_i=vy;
+    vz_i=vz;
+    PROP_DT(dt+t0);             /* Point of scattering */
+
+    
+
+    aim_x = target_x-x;         /* Vector pointing at target (e.g. analyzer) */
+    aim_y = target_y-y;
+    aim_z = target_z-z;
+
+    if(focus_aw && focus_ah) {
+      randvec_target_rect_angular(&vx, &vy, &vz, &solid_angle,
+        aim_x, aim_y, aim_z, focus_aw, focus_ah, ROT_A_CURRENT_COMP);
+    } else if(focus_xw && focus_yh) {
+      randvec_target_rect(&vx, &vy, &vz, &solid_angle,
+        aim_x, aim_y, aim_z, focus_xw, focus_yh, ROT_A_CURRENT_COMP);
+    } else {
+      randvec_target_sphere(&vx,&vy,&vz,&solid_angle,aim_x,aim_y,aim_z, focus_r);
+    }
+    NORM(vx, vy, vz);
+
+
+    // Set fixed Q using vi as approximation for vf at start
+    // This gives the approximate Q for this scattering geometry
+    phonon.qx_fixed = V2K*(vx_i - v_i*vx);
+    phonon.qy_fixed = V2K*(vy_i - v_i*vy);
+    phonon.qz_fixed = V2K*(vz_i - v_i*vz);
+    phonon.q_fixed = 1;
+
+    nf=0;
+    neutron.vf = -1;
+    neutron.vi = v_i;
+    neutron.vv_x = vx;
+    neutron.vv_y = vy;
+    neutron.vv_z = vz;
+    neutron.vi_x = vx_i;
+    neutron.vi_y = vy_i;
+    neutron.vi_z = vz_i;
+
+    E_max=8.0;
+
+    #ifndef OPENACC
+    findroots(0, v_i, sqrt(v_i*v_i+1/VS2E*E_max)+20, vf_list, &nf, omega_q, &neutron, &phonon);
+    #else
+    findroots_gpu(0, v_i, sqrt(v_i*v_i+1/VS2E*E_max)+20, vf_list, &nf, &neutron, &phonon);
+    #endif
+    index=(int)floor(rand01()*nf);
+
+      v_f=vf_list[index];
+      neutron.vf=v_f-DV;
+      f1=omega_q(&neutron, &phonon);
+      neutron.vf=v_f+DV;
+      f2=omega_q(&neutron, &phonon);
+      J_factor = fabs(f2-f1)/(2*DV);
+      omega=VS2E*(v_i*v_i-v_f*v_f);
+
+
+      // Get coherence factor at the found vf
+      phonon.coherence_flag = 1.0;
+      neutron.vf = v_f;
+      p6 = omega_q(&neutron, &phonon);
+      phonon.coherence_flag = 0.0;  // reset for next neutron 
+
+      vx *= v_f;
+      vy *= v_f;
+      vz *= v_f;
+      kappa_x=V2K*(vx_i-vx);
+      kappa_y=V2K*(vy_i-vy);
+      kappa_z=V2K*(vz_i-vz);
+      kappa2=kappa_z*kappa_z+kappa_y*kappa_y+kappa_x*kappa_x;
+      kappa2_z_norm = kappa_z*kappa_z/kappa2;
+      
+      if(!cylinder_intersect(&t0, &t1, x, y, z, vx, vy, vz, radius, yheight))
+	{
+	  /* ??? did not hit cylinder */
+	  printf("FATAL ERROR: Did not hit cylinder from inside.\n");
+	  exit(1);
+	}
+     dt = t1;
+     l_o = v_f*dt; 
+     
+     my_a_i = V_my_a_v/v_i;
+     my_a_f = V_my_a_v/v_f;
+     bose_factor=nbose(omega,T);
+     p1 = exp(-(V_my_s*(l_i+l_o)+my_a_i*l_i+my_a_f*l_o)); /* Absorption factor */
+     p2 = nf*solid_angle*(l_full*1e10)/V_0;     /* Focusing factors; assume random choice of n_f possibilities */
+     p3 = (gamma_n*gamma_n*r_0*r_0/1e10)*(g*g*Fq*Fq/4)*(v_f/v_i)*DW*(1+kappa2_z_norm)*bose_factor/4;   /* Cross section factor 1 */
+     p4 = 2*VS2E*v_f/J_factor;  /* Jacobian of delta functions in cross section */
+     p5 = p6;  /* coherence_factor; */
+     p *= p1*p2*p3*p4*p5;
+  } /* else transmit: Neutron did not hit the sample */
+free(vf_list);
+
+%}
+
+FINALLY 
+%{
+
+%}
+
+MCDISPLAY
+%{
+  
+  circle("xz", 0,  yheight/2.0, 0, radius);
+  circle("xz", 0, -yheight/2.0, 0, radius);
+  line(-radius, -yheight/2.0, 0, -radius, +yheight/2.0, 0);
+  line(+radius, -yheight/2.0, 0, +radius, +yheight/2.0, 0);
+  line(0, -yheight/2.0, -radius, 0, +yheight/2.0, -radius);
+  line(0, -yheight/2.0, +radius, 0, +yheight/2.0, +radius);
+%}
+
+END
