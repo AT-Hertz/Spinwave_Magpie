@@ -24,6 +24,7 @@
 *
  %P
 * INPUT PARAMETERS:
+* model_file [path]   File path to the magpie file
 * radius: [m]         Outer radius of sample in (x,z) plane
 * yheight: [m]        Height of sample in y direction
 * sigma_abs: [barns]  Absorption cross section at 2200 m/s per atom
