@@ -53,10 +53,11 @@
 
 DEFINE COMPONENT SpinWave_Magpie_v4
 
-SETTING PARAMETERS (string model_file = "/home/arthur/magpie/tools/magdyn/test/MnF_2_test_v2.magpie",radius,yheight,sigma_abs,sigma_inc,M,DW,T,
+SETTING PARAMETERS (string model_file = "/home/arthur/magpie/tools/magdyn/test/import_test.magpie",radius,yheight,sigma_abs,sigma_inc,M,DW,T,
               target_x=0, target_y=0, target_z=0, int target_index,
-              focus_r=0,focus_xw=0,focus_yh=0,focus_aw=0,focus_ah=0, int e_steps_low, int e_steps_high)
+              focus_r=0,focus_xw=0,focus_yh=0,focus_aw=0,focus_ah=0, int e_steps_low, int e_steps_high,A3)
 
+//MnF_2_test_v2 import_test
 /* Neutron parameters: (x,y,z,vx,vy,vz,t,sx,sy,sz,p) */
 SHARE
 %{
@@ -84,10 +85,7 @@ void *mag = 0;   // magpie handle
     t_magpie_real *ws;
     unsigned int max_branches;
     double T_;
-    double qx_fixed;  // fixed scattering vector components
-    double qy_fixed;
-    double qz_fixed;
-    int q_fixed;      // flag: 0=calculate from vf, 1=use fixed Q
+    double A3_;
 	};
   struct neutron_params {
 		// Statically allocate vectors that are always 3 
@@ -172,26 +170,14 @@ void fatalerror(char *s)
       T=phonon->T_;
 
 
-      if(phonon->q_fixed)
-      {
-          qx = phonon->qx_fixed;
-          qy = phonon->qy_fixed;
-          qz = phonon->qz_fixed;
-      }
-      else
-      {
-          qx = V2K*(vi_x - vf*vv_x);
-          qy = V2K*(vi_y - vf*vv_y);
-          qz = V2K*(vi_z - vf*vv_z);
-      }
-
-      
+      qx = V2K*(vi_x - vf*vv_x);
+      qy = V2K*(vi_y - vf*vv_y);
+      qz = V2K*(vi_z - vf*vv_z);
 
       a1=4.873;
       a2=4.873;
       a3=3.130;
-      // Find branch closest to neutron energy transfer
-
+    
       //correct for orthogonal lattices
       t_magpie_real h_rlu = qx * a1 / (2.0 * M_PI);
       t_magpie_real k_rlu = qy * a2 / (2.0 * M_PI);
@@ -484,6 +470,7 @@ INITIALIZE
 
   fprintf(stderr, "Setting Temp:%f\n",T);
 
+  
   g = 2.0023;  /*electron g-factor*/
   gamma_n = -1.913;  /*neutron gamma-factor*/
   r_0 = 2.8179;    /*electron charge radius in fm*/
@@ -494,13 +481,11 @@ INITIALIZE
   Fq=1;
   
   // Set constant parameters for parms object
-  //phonon.a_ = a;
-  //phonon.c_ = c;
-  //phonon.ah = a/2.0;
   phonon.e_steps_high_ = e_steps_high;
   phonon.e_steps_low_ = e_steps_low;
   phonon.global_mag = mag;
   phonon.T_=T;
+  phonon.A3_ = A3;
 
   phonon.max_branches = magpie_branch_count(phonon.global_mag);
   phonon.Es= (t_magpie_real*) malloc(phonon.max_branches * sizeof(t_magpie_real)); 
@@ -520,7 +505,7 @@ INITIALIZE
     target_z=1;
   }
 
-
+  
  
 %}
 TRACE
@@ -597,13 +582,6 @@ TRACE
     }
     NORM(vx, vy, vz);
 
-
-    // Set fixed Q using vi as approximation for vf at start
-    // This gives the approximate Q for this scattering geometry
-    phonon.qx_fixed = V2K*(vx_i - v_i*vx);
-    phonon.qy_fixed = V2K*(vy_i - v_i*vy);
-    phonon.qz_fixed = V2K*(vz_i - v_i*vz);
-    phonon.q_fixed = 1;
 
     nf=0;
     neutron.vf = -1;
