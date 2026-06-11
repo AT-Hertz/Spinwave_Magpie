@@ -53,7 +53,7 @@
 
 DEFINE COMPONENT SpinWave_Magpie_v4
 
-SETTING PARAMETERS (string model_file = "/home/arthur/magpie/tools/magdyn/test/import_test.magpie",radius,yheight,sigma_abs,sigma_inc,M,DW,T,
+SETTING PARAMETERS (string model_file = "/home/arthur/magpie/tools/magdyn/test/import_test_d.magpie",radius,yheight,sigma_abs,sigma_inc,M,DW,T,
               target_x=0, target_y=0, target_z=0, int target_index,
               focus_r=0,focus_xw=0,focus_yh=0,focus_aw=0,focus_ah=0, int e_steps_low, int e_steps_high,A3)
 
@@ -86,6 +86,7 @@ void *mag = 0;   // magpie handle
     unsigned int max_branches;
     double T_;
     double A3_;
+    int chosen_branch;
 	};
   struct neutron_params {
 		// Statically allocate vectors that are always 3 
@@ -149,6 +150,7 @@ void fatalerror(char *s)
       t_magpie_real omega_neutron;
       t_magpie_real best_diff;
       t_magpie_real diff;
+      int chosen_branch;
 
       vf=neutron->vf;
       vi=neutron->vi;
@@ -168,6 +170,7 @@ void fatalerror(char *s)
       ws =phonon->ws;
       max_branches=phonon->max_branches;
       T=phonon->T_;
+      chosen_branch=phonon->chosen_branch;
 
 
       qx = V2K*(vi_x - vf*vv_x);
@@ -183,16 +186,10 @@ void fatalerror(char *s)
       t_magpie_real k_rlu = qy * a2 / (2.0 * M_PI);
       t_magpie_real l_rlu = qz * a3 / (2.0 * M_PI);
 
-
-      //fprintf(stderr, "Calling magpie with H=%f K=%f L=%f\n", h_rlu, k_rlu, l_rlu);
       unsigned int num_branches = magpie_calc_energies(global_mag, h_rlu, k_rlu, l_rlu, Es, ws);
-      //fprintf(stderr, "Got Es[0]=%f Es[6]=%f Es[7]=%f\n", Es[0], Es[6], Es[7]);
-     
-
+      
       omega_neutron = fabs(VS2E * (vi*vi - vf*vf));
-      //fprintf(stderr, "vf=%f omega_n=%f Q=(%f,%f,%f) Es[0]=%f Es[1]=%f Es[2]=%f\n", vf, omega_neutron, h_rlu, k_rlu, l_rlu, Es[0], Es[1], Es[2]);
-      //fprintf(stderr, "vv=(%f,%f,%f) vi=(%f,%f,%f)\n", vv_x, vv_y, vv_z, vi_x, vi_y, vi_z);
- 
+      
       if(coherence_flag == 0.0)
       {
         // Only look for the physical magnon branch (Es[0])
@@ -202,33 +199,20 @@ void fatalerror(char *s)
         {
             return 1.0;  // positive, no root here
         }
-        omega_magnon = Es[0];  // physical magnon branch
+        omega_magnon = Es[chosen_branch];  // a mode of the physical magnon branch
         return omega_magnon - omega_neutron;
       }
-      else
+     else
       {
-          // For coherence factor: find which branch matches the converged vf
-          branch_idx = 0;
-          best_diff = fabs(Es[0] - omega_neutron);
-          for(int i = 1; i < (int)num_branches; i++)
-          {
-              if(Es[i] <= 0) continue;
-              diff = fabs(Es[i] - omega_neutron);
-              if(diff < best_diff)
-              {
-                  best_diff = diff;
-                  branch_idx = i;
-              }
-          }
-          omega_magnon = Es[branch_idx];
-          coherence_factor = ws[branch_idx]; //might need a 187 fudge factor
-      
-          if(coherence_factor < 0.0)
-          {
-              fprintf(stderr, "Negative coherence factor\n");
-              return 0.0;
-          }
-          return coherence_factor;
+        // Same branch the root solve converged on — keep them consistent
+        coherence_factor = ws[chosen_branch]; // might need a 187 fudge factor
+
+        if(coherence_factor < 0.0)
+        {
+          fprintf(stderr, "Negative coherence factor\n");
+          return 0.0;
+        }
+        return coherence_factor;
       }
     }
 
@@ -444,6 +428,7 @@ DECLARE
   double V_0;
   double Fq;
   
+  
 %}
 INITIALIZE
 %{
@@ -464,7 +449,8 @@ INITIALIZE
 		exit(-1);
 	}
 
-  magpie_set_field(mag, 0, 0, 0, 0.0, 0, 0);
+  magpie_set_field(mag, 0.0, 0.0, 0.0, 0.0, 0, 0);
+  //magpie_set_field(mag, 2.0, 0.0, 0.0, 1.0, 1, 1);
 
   magpie_set_temperature(mag, T);
 
@@ -617,6 +603,10 @@ TRACE
       p6 = omega_q(&neutron, &phonon);
       phonon.coherence_flag = 0.0;  // reset for next neutron 
 
+      //phonon.chosen_branch = (int)(rand01() * 2);   // 0 or 1, once per neutron in TRACE
+      phonon.chosen_branch = 0;
+
+
       vx *= v_f;
       vy *= v_f;
       vz *= v_f;
@@ -644,6 +634,7 @@ TRACE
      p4 = 2*VS2E*v_f/J_factor;  /* Jacobian of delta functions in cross section */
      p5 = p6;  /* coherence_factor; */
      p *= p1*p2*p3*p4*p5;
+     //p *= 2; //remove for B=0
   } /* else transmit: Neutron did not hit the sample */
 free(vf_list);
 
