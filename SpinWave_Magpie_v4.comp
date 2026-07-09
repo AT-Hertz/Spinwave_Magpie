@@ -55,9 +55,9 @@ DEFINE COMPONENT SpinWave_Magpie_v4
 
 SETTING PARAMETERS (string model_file = "/home/arthur/magpie/tools/magdyn/test/import_test_d.magpie",radius,yheight,sigma_abs,sigma_inc,M,DW,T,
               target_x=0, target_y=0, target_z=0, int target_index,
-              focus_r=0,focus_xw=0,focus_yh=0,focus_aw=0,focus_ah=0, int e_steps_low, int e_steps_high,A3)
+              focus_r=0,focus_xw=0,focus_yh=0,focus_aw=0,focus_ah=0, int e_steps_low, int e_steps_high,a1,a2,a3,B,Bx,By,Bz,align_spins, keep_signs)
 
-//MnF_2_test_v2 import_test
+//MnF_2_test_v2 import_test_d
 /* Neutron parameters: (x,y,z,vx,vy,vz,t,sx,sy,sz,p) */
 SHARE
 %{
@@ -73,9 +73,9 @@ void *mag = 0;   // magpie handle
 	struct phonon_params {
     int e_steps_high_;
     int e_steps_low_;
-    double a1;
-    double a2;
-    double a3;
+    double a1_;
+    double a2_;
+    double a3_;
     int branch_idx;
     double coherence_flag;
     double h_hkl;
@@ -85,8 +85,13 @@ void *mag = 0;   // magpie handle
     t_magpie_real *ws;
     unsigned int max_branches;
     double T_;
-    double A3_;
     int chosen_branch;
+    double B_;
+    double Bx_;
+    double By_;
+    double Bz_;
+    int align_spins_;
+    int keep_signs_;
 	};
   struct neutron_params {
 		// Statically allocate vectors that are always 3 
@@ -140,7 +145,7 @@ void fatalerror(char *s)
       double h_q, l_q;
       double coherence_flag;
       t_magpie global_mag;
-      int branch_idx; //skal gøre så man kan vælge branch...måske
+      int branch_idx; 
       t_magpie_real *Es;
       t_magpie_real *ws;
       unsigned int max_branches;
@@ -151,6 +156,12 @@ void fatalerror(char *s)
       t_magpie_real best_diff;
       t_magpie_real diff;
       int chosen_branch;
+      double B;
+      double Bx;
+      double By;
+      double Bz;
+      int align_spins;
+      int keep_signs;
 
       vf=neutron->vf;
       vi=neutron->vi;
@@ -161,9 +172,6 @@ void fatalerror(char *s)
       vi_y=neutron->vi_y;
       vi_z=neutron->vi_z;
       branch_idx=phonon->branch_idx;
-      a1=phonon->a1;
-      a2=phonon->a2;
-      a3=phonon->a3;
       coherence_flag=phonon->coherence_flag;
       global_mag=phonon->global_mag;
       Es =phonon->Es;
@@ -171,15 +179,19 @@ void fatalerror(char *s)
       max_branches=phonon->max_branches;
       T=phonon->T_;
       chosen_branch=phonon->chosen_branch;
-
+      a1=phonon->a1_;
+      a2=phonon->a2_;
+      a3=phonon->a3_;
+      B=phonon->B_;
+      Bx=phonon->Bx_;
+      By=phonon->By_;
+      Bz=phonon->Bz_;
+      align_spins=phonon->align_spins_;
+      keep_signs=phonon->keep_signs_;
 
       qx = V2K*(vi_x - vf*vv_x);
       qy = V2K*(vi_y - vf*vv_y);
       qz = V2K*(vi_z - vf*vv_z);
-
-      a1=4.873;
-      a2=4.873;
-      a3=3.130;
     
       //correct for orthogonal lattices
       t_magpie_real h_rlu = qx * a1 / (2.0 * M_PI);
@@ -449,12 +461,13 @@ INITIALIZE
 		exit(-1);
 	}
 
-  magpie_set_field(mag, 0.0, 0.0, 0.0, 0.0, 0, 0);
+  magpie_set_field(mag, B, Bx, By, Bz, align_spins, keep_signs);
   //magpie_set_field(mag, 2.0, 0.0, 0.0, 1.0, 1, 1);
 
   magpie_set_temperature(mag, T);
 
   fprintf(stderr, "Setting Temp:%f\n",T);
+  fprintf(stderr, "Setting B:%f\n (%f,%f,%f)",B,Bx,By,Bz);
 
   
   g = 2.0023;  /*electron g-factor*/
@@ -471,7 +484,15 @@ INITIALIZE
   phonon.e_steps_low_ = e_steps_low;
   phonon.global_mag = mag;
   phonon.T_=T;
-  phonon.A3_ = A3;
+  phonon.a1_=a1;
+  phonon.a2_=a2;
+  phonon.a3_=a3;
+  phonon.B_=B;
+  phonon.Bx_=Bx;
+  phonon.By_=By;
+  phonon.Bz_=Bz;
+  phonon.align_spins_=align_spins;
+  phonon.keep_signs_=keep_signs;
 
   phonon.max_branches = magpie_branch_count(phonon.global_mag);
   phonon.Es= (t_magpie_real*) malloc(phonon.max_branches * sizeof(t_magpie_real)); 
@@ -604,8 +625,15 @@ TRACE
       phonon.coherence_flag = 0.0;  // reset for next neutron 
 
       //phonon.chosen_branch = (int)(rand01() * 2);   // 0 or 1, once per neutron in TRACE
-      phonon.chosen_branch = 0;
+      //phonon.chosen_branch = 0;
 
+      //phonon.chosen_branch = (int)(rand01() * 2);   // 0 or 1, once per neutron in TRACE
+      if(B != 0.0) {
+        phonon.chosen_branch = (int)(rand01() * 2);   // field on: two split branches, sample one
+      } else {
+        phonon.chosen_branch = 0;                     // field off: branches degenerate, one suffices
+      }
+      //change the factor of 2 to n_valid which is the num of physical branches
 
       vx *= v_f;
       vy *= v_f;
@@ -634,7 +662,8 @@ TRACE
      p4 = 2*VS2E*v_f/J_factor;  /* Jacobian of delta functions in cross section */
      p5 = p6;  /* coherence_factor; */
      p *= p1*p2*p3*p4*p5;
-     //p *= 2; //remove for B=0
+     //p *= 2; //remove for B=0 
+     //Still need to fix the weights anyways
   } /* else transmit: Neutron did not hit the sample */
 free(vf_list);
 
