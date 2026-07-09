@@ -51,6 +51,7 @@ double jFM;
 double jextra;
 double S;
 double D;
+double A3_total;
 %}
 
 INITIALIZE
@@ -91,6 +92,8 @@ thetaA = asin(QM/(2*kf))*RAD2DEG;
 twothetaS = acos((q*q-ki*ki-kf*kf)/(-2*ki*kf))*RAD2DEG;
 alpha = acos((kf*kf-ki*ki-q*q)/(-2*ki*q));
 A3=(asin(l*cstar/(q+SMALL__NUMBER))-alpha)*RAD2DEG;
+
+A3_total = -A3 + dA3;
 
 //Printout calculations
 printf("=== INITIALIZE: h=%g l=%g Ei=%g Ef=%g ===\n", h, l, Ei, Ef);
@@ -229,29 +232,6 @@ SPLIT 1
 AT (0, 0, 0) RELATIVE arm2
 ROTATED (0, -A3+dA3, 180) RELATIVE arm2*/
 
-/*COMPONENT SAMPLE = MagpieTest_v3(
-    radius=width/2,
-    yheight=2*width,
-    sigma_abs=0,
-    sigma_inc=0,
-    b=1,
-    M=1,
-    DW=1,
-    T= Temp,
-    target_x=0, 
-    target_y=0, 
-    target_z=0, 
-    target_index=3,
-    focus_r=0,
-    focus_xw=0.005,
-    focus_yh=0.005,
-    focus_aw=0,
-    focus_ah=0, 
-    e_steps_low=E_steps_low,
-    e_steps_high=E_steps_high)
-AT (0, 0, 0) RELATIVE arm2
-ROTATED (0, -A3+dA3, 180) RELATIVE arm2*/
-
 COMPONENT SAMPLE = SpinWave_Magpie_v4(
     radius=width/2,
     yheight=2*width,
@@ -270,7 +250,16 @@ COMPONENT SAMPLE = SpinWave_Magpie_v4(
     focus_aw=0,
     focus_ah=0, 
     e_steps_low=E_steps_low,
-    e_steps_high=E_steps_high)
+    e_steps_high=E_steps_high,
+    a1=4.873,
+    a2=4.873,
+    a3=3.130,
+    B=0,
+    Bx=0,
+    By=0,
+    Bz=0,
+    align_spins=0, 
+    keep_signs=0)
 AT (0, 0, 0) RELATIVE arm2
 ROTATED (0, -A3+dA3, 180) RELATIVE arm2
 
